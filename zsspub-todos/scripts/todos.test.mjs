@@ -9,7 +9,7 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -399,5 +399,233 @@ describe('未知命令', () => {
     const { stdout, status } = run(env, 'invalid-cmd');
     assert.equal(status, 0);
     assert.match(stdout, /待办事项技能脚本/);
+  });
+});
+
+// ── export 命令 ───────────────────────────────────────────────────────────────
+describe('export 命令', () => {
+  let env, dir;
+  before(() => ({ dir, env } = makeTmpEnv()));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('空数据库导出仅含表头', () => {
+    const csvPath = join(dir, 'empty.csv');
+    const { stdout, status } = run(env, 'export', `--file=${csvPath}`);
+    assert.equal(status, 0);
+    assert.match(stdout, /已导出 0 条/);
+    const content = readFileSync(csvPath, 'utf8');
+    assert.match(content, /^id,title,status,priority,tags,due_date,created_at\n$/);
+  });
+
+  test('导出多条待办数据正确', () => {
+    run(env, 'add', '任务A', '--priority=high', '--tags=工作');
+    run(env, 'add', '任务B', '--priority=low', '--due=2026-06-01 12:00:00');
+    const csvPath = join(dir, 'todos.csv');
+    const { stdout, status } = run(env, 'export', `--file=${csvPath}`);
+    assert.equal(status, 0);
+    assert.match(stdout, /已导出 2 条/);
+    const content = readFileSync(csvPath, 'utf8');
+    assert.match(content, /任务A/);
+    assert.match(content, /任务B/);
+    assert.match(content, /high/);
+    assert.match(content, /工作/);
+  });
+
+  test('--status 筛选导出', () => {
+    // 将任务A标记为完成
+    const listOut = run(env, 'list', '--priority=high').stdout;
+    const id = listOut.match(/(\d+)\./)?.[1];
+    if (id) run(env, 'done', id);
+
+    const csvPath = join(dir, 'pending-only.csv');
+    const { stdout, status } = run(env, 'export', `--file=${csvPath}`, '--status=pending');
+    assert.equal(status, 0);
+    assert.match(stdout, /已导出 1 条/);
+    const content = readFileSync(csvPath, 'utf8');
+    assert.doesNotMatch(content, /任务A/);
+    assert.match(content, /任务B/);
+  });
+
+  test('tags 含逗号时正确转义', () => {
+    const { dir: d, env: e } = makeTmpEnv();
+    try {
+      run(e, 'add', '多标签任务', '--tags=工作,紧急,项目');
+      const csvPath = join(d, 'tags.csv');
+      run(e, 'export', `--file=${csvPath}`);
+      const content = readFileSync(csvPath, 'utf8');
+      // tags 含逗号应被双引号包裹
+      assert.match(content, /"工作,紧急,项目"/);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test('不指定 --file 时自动生成文件名', () => {
+    const { dir: d, env: e } = makeTmpEnv();
+    try {
+      run(e, 'add', '自动命名测试');
+      const { stdout, status } = run(e, 'export');
+      assert.equal(status, 0);
+      assert.match(stdout, /已导出 1 条/);
+      assert.match(stdout, /todos-\d{8}-\d{6}\.csv/);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── import 命令 ───────────────────────────────────────────────────────────────
+describe('import 命令', () => {
+  let env, dir;
+  before(() => ({ dir, env } = makeTmpEnv()));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('正常导入 CSV 并验证数据', () => {
+    const csvPath = join(dir, 'import.csv');
+    writeFileSync(csvPath, 'title,status,priority,tags,due_date\n导入任务A,pending,high,测试,2026-12-31 18:00:00\n导入任务B,done,low,,\n', 'utf8');
+    const { stdout, status } = run(env, 'import', `--file=${csvPath}`);
+    assert.equal(status, 0);
+    assert.match(stdout, /已导入 2 条/);
+
+    // 验证数据已插入
+    const listOut = run(env, 'list', '--status=all').stdout;
+    assert.match(listOut, /导入任务A/);
+    assert.match(listOut, /导入任务B/);
+  });
+
+  test('缺少 title 列时报错退出', () => {
+    const csvPath = join(dir, 'no-title.csv');
+    writeFileSync(csvPath, 'status,priority\npending,high\n', 'utf8');
+    const { stderr, status } = run(env, 'import', `--file=${csvPath}`);
+    assert.notEqual(status, 0);
+    assert.match(stderr, /缺少必要字段：title/);
+  });
+
+  test('title 为空值时报错退出', () => {
+    const csvPath = join(dir, 'empty-title.csv');
+    writeFileSync(csvPath, 'title,status\n,pending\n', 'utf8');
+    const { stderr, status } = run(env, 'import', `--file=${csvPath}`);
+    assert.notEqual(status, 0);
+    assert.match(stderr, /title 不能为空/);
+  });
+
+  test('无效 status 值时报错退出', () => {
+    const csvPath = join(dir, 'bad-status.csv');
+    writeFileSync(csvPath, 'title,status\n任务X,invalid\n', 'utf8');
+    const { stderr, status } = run(env, 'import', `--file=${csvPath}`);
+    assert.notEqual(status, 0);
+    assert.match(stderr, /status 必须为 pending 或 done/);
+  });
+
+  test('无效 priority 值时报错退出', () => {
+    const csvPath = join(dir, 'bad-priority.csv');
+    writeFileSync(csvPath, 'title,priority\n任务X,超高\n', 'utf8');
+    const { stderr, status } = run(env, 'import', `--file=${csvPath}`);
+    assert.notEqual(status, 0);
+    assert.match(stderr, /priority 必须为 low、medium 或 high/);
+  });
+
+  test('无效 due_date 格式时报错退出', () => {
+    const csvPath = join(dir, 'bad-due.csv');
+    writeFileSync(csvPath, 'title,due_date\n任务X,2026/12/31\n', 'utf8');
+    const { stderr, status } = run(env, 'import', `--file=${csvPath}`);
+    assert.notEqual(status, 0);
+    assert.match(stderr, /due_date 必须使用/);
+  });
+
+  test('仅含 title 列（最小 CSV）成功导入', () => {
+    const { dir: d, env: e } = makeTmpEnv();
+    try {
+      const csvPath = join(d, 'minimal.csv');
+      writeFileSync(csvPath, 'title\n最小导入任务\n', 'utf8');
+      const { stdout, status } = run(e, 'import', `--file=${csvPath}`);
+      assert.equal(status, 0);
+      assert.match(stdout, /已导入 1 条/);
+      // 验证默认值
+      const listOut = run(e, 'list').stdout;
+      assert.match(listOut, /最小导入任务/);
+      assert.match(listOut, /🟡/); // medium priority
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test('含多余列时忽略多余列，成功导入', () => {
+    const { dir: d, env: e } = makeTmpEnv();
+    try {
+      const csvPath = join(d, 'extra-cols.csv');
+      writeFileSync(csvPath, 'title,extra_col,priority\n多余列任务,忽略我,high\n', 'utf8');
+      const { stdout, status } = run(e, 'import', `--file=${csvPath}`);
+      assert.equal(status, 0);
+      assert.match(stdout, /已导入 1 条/);
+      const listOut = run(e, 'list').stdout;
+      assert.match(listOut, /多余列任务/);
+      assert.match(listOut, /🔴/); // high priority
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
+  test('未指定 --file 时报错', () => {
+    const { stderr, status } = run(env, 'import');
+    assert.notEqual(status, 0);
+    assert.match(stderr, /需要指定 CSV 文件路径/);
+  });
+
+  test('文件不存在时报错', () => {
+    const { stderr, status } = run(env, 'import', '--file=/nonexistent/file.csv');
+    assert.notEqual(status, 0);
+    assert.match(stderr, /文件不存在/);
+  });
+
+  test('原子性：部分行不合法时不导入任何数据', () => {
+    const { dir: d, env: e } = makeTmpEnv();
+    try {
+      const csvPath = join(d, 'partial-bad.csv');
+      writeFileSync(csvPath, 'title,status\n合法任务,pending\n非法任务,invalid\n', 'utf8');
+      const { stderr, status } = run(e, 'import', `--file=${csvPath}`);
+      assert.notEqual(status, 0);
+      assert.match(stderr, /校验失败/);
+      // 验证数据库中没有插入任何数据
+      const listOut = run(e, 'list', '--status=all').stdout;
+      assert.match(listOut, /没有找到/);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── export → import round-trip ───────────────────────────────────────────────
+describe('export → import round-trip', () => {
+  test('导出后重新导入，数据一致（除 id 和 created_at）', () => {
+    const { dir: d1, env: e1 } = makeTmpEnv();
+    const { dir: d2, env: e2 } = makeTmpEnv();
+    try {
+      // 在 d1 中添加数据
+      run(e1, 'add', '任务甲', '--priority=high', '--tags=工作,紧急', '--due=2026-12-31 18:00:00');
+      run(e1, 'add', '任务乙', '--priority=low');
+      run(e1, 'add', '任务丙', '--due=2027-03-15 09:30:00');
+      // 将任务乙标记完成
+      const id = run(e1, 'list', '--priority=low').stdout.match(/(\d+)\./)?.[1];
+      if (id) run(e1, 'done', id);
+
+      // 导出
+      const csvPath = join(d1, 'roundtrip.csv');
+      run(e1, 'export', `--file=${csvPath}`);
+
+      // 导入到 d2
+      const { status } = run(e2, 'import', `--file=${csvPath}`);
+      assert.equal(status, 0);
+
+      // 验证 d2 中的数据与 d1 基本一致
+      const list2 = run(e2, 'list', '--status=all').stdout;
+      assert.match(list2, /任务甲/);
+      assert.match(list2, /任务乙/);
+      assert.match(list2, /任务丙/);
+      assert.match(list2, /共 3 条/);
+    } finally {
+      rmSync(d1, { recursive: true, force: true });
+      rmSync(d2, { recursive: true, force: true });
+    }
   });
 });

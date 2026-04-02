@@ -1,9 +1,9 @@
 ---
 name: zsspub-todos
 description: "管理存储在本地 SQLite 中的个人待办事项列表，支持添加、查看、完成、删除、更新和搜索任务，以及按优先级、标签、截止日期筛选。每当用户提到要记一件事、提醒自己做某事、查看今天有什么任务、把某件事标记为完成、想整理一下待办清单、搜索待办内容，都应主动使用这个 skill，即使用户没有明确说“todo”或“待办”。英文场景同样适用，如 remind me to、add to my todo list、what do I have today、mark X as done。"
-argument-hint: "add|list|done|delete|update|config [选项]"
+argument-hint: "add|list|done|delete|update|export|import|config [选项]"
 metadata:
-  version: "1.0.2"
+  version: "1.1.0"
   data_version: "1.0.0"
   author: https://github.com/aximario
   license: MIT
@@ -68,6 +68,8 @@ todos config --timezone=Asia/Shanghai
 | "把第2条改成明天上午交" | `update <id> --due="..."` |
 | "查一下高优先级的任务" | `list --priority=high` |
 | "帮我找一下关于报告的任务" / "有没有跟工作相关的待办" | `list --search=关键字` |
+| "导出待办" / "备份一下我的任务" / "把待办导出成文件" | `export` |
+| "导入待办" / "从文件导入" / "恢复待办数据" | `import --file=<路径>` |
 
 **推断规则：**
 - 用户说"今天"→ due 设当天 23:59:59；"明天"→ 次日 23:59:59；"后天"→ 后天 23:59:59
@@ -121,6 +123,26 @@ todos update <id> [--title="新标题"] [--priority=...] [--tags=...] [--due="YY
 
 别名：`edit`
 
+### 导出待办
+```
+todos export [--file=<路径>] [--status=pending|done|all]
+```
+- `--file`：导出文件路径（可选）。不指定时自动生成文件名 `todos-YYYYMMDD-HHmmss.csv`（UTC 时间戳），存放在 `.data/zsspub-todos/` 目录下
+- `--status`：导出的任务状态筛选（默认 `all`，即全量导出）
+- CSV 中的时间字段（`due_date`、`created_at`）均为 UTC 原始值
+
+### 导入待办
+```
+todos import --file=<路径>
+```
+- `--file`：CSV 文件路径（必需）
+- CSV 必须包含 `title` 列，否则拒绝导入
+- 可选列：`status`（pending/done）、`priority`（low/medium/high）、`tags`、`due_date`（UTC，格式 `YYYY-MM-DD HH:mm:ss`）
+- 未提供的可选列取默认值：`status=pending`、`priority=medium`、`tags=空`、`due_date=空`
+- CSV 中的 `id` 和 `created_at` 列会被忽略（由数据库自动生成）
+- **原子性**：先校验所有行，任一行不合法则整体拒绝导入，不写入任何数据
+- 校验失败时输出具体错误行号和原因
+
 ### 查看/更新配置
 ```
 todos config [--timezone=<IANA时区>]
@@ -163,4 +185,13 @@ todos config
 
 # 设置时区为中国标准时间（UTC+8）
 todos config --timezone=Asia/Shanghai
+
+# 导出所有待办到自动命名的 CSV 文件（存放在 .data/zsspub-todos/ 下）
+todos export
+
+# 导出待完成任务到指定文件
+todos export --file=my-todos.csv --status=pending
+
+# 从 CSV 文件导入待办
+todos import --file=my-todos.csv
 ```

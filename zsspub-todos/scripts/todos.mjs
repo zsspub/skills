@@ -200,6 +200,89 @@ function validateDue(due) {
   return due;
 }
 
+// ── CSV 工具函数 ──────────────────────────────────────────────────────────────
+const CSV_COLUMNS = ['id', 'title', 'status', 'priority', 'tags', 'due_date', 'created_at'];
+
+/** 将字段值转义为 CSV 安全字符串：含逗号、双引号或换行时用双引号包裹 */
+function csvEscape(val) {
+  const s = val == null ? '' : String(val);
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+/** 将数据库行数组序列化为 CSV 字符串（含表头），时间字段保持 UTC 原值 */
+function toCSV(rows) {
+  const header = CSV_COLUMNS.join(',');
+  const lines = rows.map(r =>
+    CSV_COLUMNS.map(c => csvEscape(r[c])).join(',')
+  );
+  return [header, ...lines].join('\n') + '\n';
+}
+
+/** 解析 CSV 文本为对象数组，key 来自第一行表头。支持双引号包裹、转义双引号、字段内换行 */
+function parseCSV(text) {
+  const rows = [];
+  let headers = null;
+  let i = 0;
+  const len = text.length;
+
+  while (i < len) {
+    const fields = [];
+    // 解析一行的所有字段
+    while (i < len) {
+      if (text[i] === '"') {
+        // 带引号的字段
+        i++; // skip opening quote
+        let val = '';
+        while (i < len) {
+          if (text[i] === '"') {
+            if (i + 1 < len && text[i + 1] === '"') {
+              val += '"';
+              i += 2;
+            } else {
+              i++; // skip closing quote
+              break;
+            }
+          } else {
+            val += text[i];
+            i++;
+          }
+        }
+        fields.push(val);
+        // skip comma or line ending
+        if (i < len && text[i] === ',') { i++; }
+        else if (i < len && text[i] === '\r') { i++; if (i < len && text[i] === '\n') i++; break; }
+        else if (i < len && text[i] === '\n') { i++; break; }
+      } else {
+        // 不带引号的字段
+        let val = '';
+        while (i < len && text[i] !== ',' && text[i] !== '\n' && text[i] !== '\r') {
+          val += text[i];
+          i++;
+        }
+        fields.push(val);
+        if (i < len && text[i] === ',') { i++; }
+        else if (i < len && text[i] === '\r') { i++; if (i < len && text[i] === '\n') i++; break; }
+        else if (i < len && text[i] === '\n') { i++; break; }
+      }
+    }
+    // 跳过空行（仅在末尾）
+    if (fields.length === 1 && fields[0] === '' && i >= len) break;
+    if (!headers) {
+      headers = fields;
+    } else {
+      const obj = {};
+      for (let j = 0; j < headers.length; j++) {
+        obj[headers[j]] = j < fields.length ? fields[j] : '';
+      }
+      rows.push(obj);
+    }
+  }
+  return rows;
+}
+
 // ── 各命令实现 ────────────────────────────────────────────────────────────────
 
 /** add 命令：新增一条待办，支持 --priority、--tags、--due */
@@ -390,6 +473,111 @@ function cmdConfig(flags) {
   console.log();
 }
 
+/** export 命令：将待办数据导出为 CSV 文件 */
+function cmdExport(flags) {
+  const status = flags.status ?? 'all';
+  if (!['pending', 'done', 'all'].includes(status)) {
+    console.error('错误：--status 必须为 pending、done 或 all。');
+    process.exit(1);
+  }
+  const conditions = [];
+  const params = [];
+  if (status !== 'all') {
+    conditions.push('status = ?');
+    params.push(status);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = db.prepare(`SELECT * FROM todos ${where} ORDER BY id ASC`).all(...params);
+
+  const csv = toCSV(rows);
+
+  let filePath;
+  if (flags.file) {
+    filePath = resolve(flags.file);
+  } else {
+    // 自动生成文件名：todos-YYYYMMDD-HHmmss.csv（UTC）
+    const now = new Date();
+    const p = v => String(v).padStart(2, '0');
+    const ts = `${now.getUTCFullYear()}${p(now.getUTCMonth()+1)}${p(now.getUTCDate())}-${p(now.getUTCHours())}${p(now.getUTCMinutes())}${p(now.getUTCSeconds())}`;
+    filePath = join(DATA_DIR, `todos-${ts}.csv`);
+  }
+
+  writeFileSync(filePath, csv, 'utf8');
+  console.log(`\n已导出 ${rows.length} 条待办到：${filePath}\n`);
+}
+
+/** import 命令：从 CSV 文件导入待办数据，导入前校验字段兼容性 */
+function cmdImport(flags) {
+  if (!flags.file) {
+    console.error('错误：需要指定 CSV 文件路径。\n  用法：import --file=<路径>');
+    process.exit(1);
+  }
+  const filePath = resolve(flags.file);
+  if (!existsSync(filePath)) {
+    console.error(`错误：文件不存在：${filePath}`);
+    process.exit(1);
+  }
+
+  const text = readFileSync(filePath, 'utf8');
+  const rows = parseCSV(text);
+
+  if (rows.length === 0) {
+    console.log('CSV 文件中没有数据行。');
+    return;
+  }
+
+  // 表头校验：必须包含 title 列
+  const headers = Object.keys(rows[0]);
+  if (!headers.includes('title')) {
+    console.error('错误：CSV 文件缺少必要字段：title。导入已取消。');
+    process.exit(1);
+  }
+
+  // 逐行校验
+  const errors = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const line = i + 2; // CSV 行号（第1行是表头，数据从第2行开始）
+    if (!row.title || row.title.trim() === '') {
+      errors.push(`第 ${line} 行：title 不能为空。`);
+    }
+    if (row.status !== undefined && row.status !== '' && !['pending', 'done'].includes(row.status)) {
+      errors.push(`第 ${line} 行：status 必须为 pending 或 done，当前值："${row.status}"。`);
+    }
+    if (row.priority !== undefined && row.priority !== '' && !['low', 'medium', 'high'].includes(row.priority)) {
+      errors.push(`第 ${line} 行：priority 必须为 low、medium 或 high，当前值："${row.priority}"。`);
+    }
+    if (row.due_date !== undefined && row.due_date !== '') {
+      if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(row.due_date)) {
+        errors.push(`第 ${line} 行：due_date 必须使用 "YYYY-MM-DD HH:mm:ss" 格式，当前值："${row.due_date}"。`);
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error('错误：CSV 数据校验失败，导入已取消。\n');
+    for (const e of errors) {
+      console.error(`  ${e}`);
+    }
+    process.exit(1);
+  }
+
+  // 校验通过，执行导入
+  const stmt = db.prepare(
+    'INSERT INTO todos (title, status, priority, tags, due_date) VALUES (?, ?, ?, ?, ?)'
+  );
+  for (const row of rows) {
+    const title = row.title;
+    const status = row.status || 'pending';
+    const priority = row.priority || 'medium';
+    const tags = row.tags ?? '';
+    const due_date = row.due_date || null;
+    stmt.run(title, status, priority, tags, due_date);
+  }
+
+  console.log(`\n已导入 ${rows.length} 条待办。\n`);
+}
+
 // ── 程序入口 ──────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 const { positional, flags } = parseArgs(args);
@@ -417,6 +605,12 @@ switch (cmd) {
   case 'config':
     cmdConfig(flags);
     break;
+  case 'export':
+    cmdExport(flags);
+    break;
+  case 'import':
+    cmdImport(flags);
+    break;
   default:
     console.log(`
 待办事项技能脚本
@@ -426,6 +620,8 @@ switch (cmd) {
   node todos.mjs done <id>
   node todos.mjs delete <id>
   node todos.mjs update <id> [--title="新标题"] [--priority=low|medium|high] [--tags=标签1,标签2] [--due="YYYY-MM-DD HH:mm:ss"]
+  node todos.mjs export [--file=<路径>] [--status=pending|done|all]
+  node todos.mjs import --file=<路径>
   node todos.mjs config [--timezone=<IANA时区>]
 
 数据存储路径：${DB_PATH}
