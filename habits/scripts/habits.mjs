@@ -193,6 +193,81 @@ function validateDate(val, label) {
   return val;
 }
 
+// ── CSV 工具函数 ──────────────────────────────────────────────────────────────
+const CSV_COLUMNS = ['id', 'topic', 'tags', 'duration_minutes', 'note', 'raw_input', 'checked_at', 'created_at'];
+
+function csvEscape(val) {
+  const s = val == null ? '' : String(val);
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+function toCSV(rows) {
+  const header = CSV_COLUMNS.join(',');
+  const lines = rows.map(r =>
+    CSV_COLUMNS.map(c => csvEscape(r[c])).join(',')
+  );
+  return [header, ...lines].join('\n') + '\n';
+}
+
+function parseCSV(text) {
+  const rows = [];
+  let headers = null;
+  let i = 0;
+  const len = text.length;
+
+  while (i < len) {
+    const fields = [];
+    while (i < len) {
+      if (text[i] === '"') {
+        i++;
+        let val = '';
+        while (i < len) {
+          if (text[i] === '"') {
+            if (i + 1 < len && text[i + 1] === '"') {
+              val += '"';
+              i += 2;
+            } else {
+              i++;
+              break;
+            }
+          } else {
+            val += text[i];
+            i++;
+          }
+        }
+        fields.push(val);
+        if (i < len && text[i] === ',') { i++; }
+        else if (i < len && text[i] === '\r') { i++; if (i < len && text[i] === '\n') i++; break; }
+        else if (i < len && text[i] === '\n') { i++; break; }
+      } else {
+        let val = '';
+        while (i < len && text[i] !== ',' && text[i] !== '\n' && text[i] !== '\r') {
+          val += text[i];
+          i++;
+        }
+        fields.push(val);
+        if (i < len && text[i] === ',') { i++; }
+        else if (i < len && text[i] === '\r') { i++; if (i < len && text[i] === '\n') i++; break; }
+        else if (i < len && text[i] === '\n') { i++; break; }
+      }
+    }
+    if (fields.length === 1 && fields[0] === '' && i >= len) break;
+    if (!headers) {
+      headers = fields;
+    } else {
+      const obj = {};
+      for (let j = 0; j < headers.length; j++) {
+        obj[headers[j]] = j < fields.length ? fields[j] : '';
+      }
+      rows.push(obj);
+    }
+  }
+  return rows;
+}
+
 // ── 各命令实现 ────────────────────────────────────────────────────────────────
 
 function cmdAdd(flags, positional) {
@@ -559,6 +634,7 @@ function cmdStreak(flags) {
 }
 
 function cmdConfig(flags) {
+
   if (flags.timezone !== undefined) {
     try {
       Intl.DateTimeFormat(undefined, { timeZone: flags.timezone });
@@ -574,6 +650,105 @@ function cmdConfig(flags) {
   console.log('\n当前配置：\n');
   console.log(JSON.stringify(config, null, 2));
   console.log();
+}
+
+function cmdExport(flags) {
+  const conditions = [];
+  const params = [];
+  if (flags.topic) {
+    conditions.push('topic LIKE ?');
+    params.push(`%${flags.topic}%`);
+  }
+  if (flags.tag) {
+    conditions.push("(',' || tags || ',' LIKE ?)");
+    params.push(`%,${flags.tag},%`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = db.prepare(`SELECT * FROM checkins ${where} ORDER BY id ASC`).all(...params);
+
+  const csv = toCSV(rows);
+
+  let filePath;
+  if (flags.file) {
+    filePath = resolve(flags.file);
+  } else {
+    const now = new Date();
+    const p = v => String(v).padStart(2, '0');
+    const ts = `${now.getUTCFullYear()}${p(now.getUTCMonth()+1)}${p(now.getUTCDate())}-${p(now.getUTCHours())}${p(now.getUTCMinutes())}${p(now.getUTCSeconds())}`;
+    filePath = join(DATA_DIR, `habits-${ts}.csv`);
+  }
+
+  writeFileSync(filePath, csv, 'utf8');
+  console.log(`\n已导出 ${rows.length} 条打卡记录到：${filePath}\n`);
+}
+
+function cmdImport(flags) {
+  if (!flags.file) {
+    console.error('错误：需要指定 CSV 文件路径。\n  用法：import --file=<路径>');
+    process.exit(1);
+  }
+  const filePath = resolve(flags.file);
+  if (!existsSync(filePath)) {
+    console.error(`错误：文件不存在：${filePath}`);
+    process.exit(1);
+  }
+
+  const text = readFileSync(filePath, 'utf8');
+  const rows = parseCSV(text);
+
+  if (rows.length === 0) {
+    console.log('CSV 文件中没有数据行。');
+    return;
+  }
+
+  const headers = Object.keys(rows[0]);
+  if (!headers.includes('topic')) {
+    console.error('错误：CSV 文件缺少必要字段：topic。导入已取消。');
+    process.exit(1);
+  }
+
+  const errors = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const line = i + 2;
+    if (!row.topic || row.topic.trim() === '') {
+      errors.push(`第 ${line} 行：topic 不能为空。`);
+    }
+    if (row.duration_minutes !== undefined && row.duration_minutes !== '') {
+      const dur = Number(row.duration_minutes);
+      if (!Number.isInteger(dur) || dur <= 0) {
+        errors.push(`第 ${line} 行：duration_minutes 必须为正整数，当前值："${row.duration_minutes}"。`);
+      }
+    }
+    if (row.checked_at !== undefined && row.checked_at !== '') {
+      if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(row.checked_at)) {
+        errors.push(`第 ${line} 行：checked_at 必须使用 "YYYY-MM-DD HH:mm:ss" 格式，当前值："${row.checked_at}"。`);
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error('错误：CSV 数据校验失败，导入已取消。\n');
+    for (const e of errors) {
+      console.error(`  ${e}`);
+    }
+    process.exit(1);
+  }
+
+  const stmt = db.prepare(
+    'INSERT INTO checkins (topic, tags, duration_minutes, note, raw_input, checked_at) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  for (const row of rows) {
+    const topic = row.topic;
+    const tags = row.tags ?? '';
+    const duration_minutes = row.duration_minutes ? Number(row.duration_minutes) : null;
+    const note = row.note ?? '';
+    const raw_input = row.raw_input ?? '';
+    const checked_at = row.checked_at || getNowUTCStr();
+    stmt.run(topic, tags, duration_minutes, note, raw_input, checked_at);
+  }
+
+  console.log(`\n已导入 ${rows.length} 条打卡记录。\n`);
 }
 
 // ── 主入口 ────────────────────────────────────────────────────────────────────
@@ -608,7 +783,13 @@ switch (command) {
   case 'config':
     cmdConfig(flags);
     break;
+  case 'export':
+    cmdExport(flags);
+    break;
+  case 'import':
+    cmdImport(flags);
+    break;
   default:
-    console.error(`未知命令：${command ?? '(空)'}\n可用命令：add, list, update, delete, stats, streak, config`);
+    console.error(`未知命令：${command ?? '(空)'}\n可用命令：add, list, update, delete, stats, streak, config, export, import`);
     process.exit(1);
 }

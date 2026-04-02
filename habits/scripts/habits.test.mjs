@@ -9,7 +9,7 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -350,6 +350,106 @@ describe('config 命令', () => {
     const { stderr, status } = run(env, 'config', '--timezone=Invalid/Zone');
     assert.notEqual(status, 0);
     assert.match(stderr, /不是有效的 IANA 时区标识符/);
+  });
+});
+
+// ── export 命令 ───────────────────────────────────────────────────────────────
+describe('export 命令', () => {
+  let env, dir;
+  before(() => {
+    ({ dir, env } = makeTmpEnv());
+    run(env, 'add', '骑行', '--tags=运动', '--duration=30', '--raw=打卡骑行30分钟');
+    run(env, 'add', '阅读', '--tags=学习', '--note=第一章', '--raw=读了第一章');
+  });
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('导出所有记录', () => {
+    const outFile = join(dir, 'export.csv');
+    const { stdout, status } = run(env, 'export', `--file=${outFile}`);
+    assert.equal(status, 0);
+    assert.match(stdout, /已导出 2 条/);
+    const csv = readFileSync(outFile, 'utf8');
+    assert.match(csv, /topic/);
+    assert.match(csv, /骑行/);
+    assert.match(csv, /阅读/);
+  });
+
+  test('按主题筛选导出', () => {
+    const outFile = join(dir, 'export-topic.csv');
+    const { stdout, status } = run(env, 'export', `--file=${outFile}`, '--topic=骑行');
+    assert.equal(status, 0);
+    assert.match(stdout, /已导出 1 条/);
+    const csv = readFileSync(outFile, 'utf8');
+    assert.match(csv, /骑行/);
+    assert.doesNotMatch(csv, /阅读/);
+  });
+
+  test('按标签筛选导出', () => {
+    const outFile = join(dir, 'export-tag.csv');
+    const { stdout, status } = run(env, 'export', `--file=${outFile}`, '--tag=学习');
+    assert.equal(status, 0);
+    assert.match(stdout, /已导出 1 条/);
+  });
+
+  test('自动生成文件名', () => {
+    const { stdout, status } = run(env, 'export');
+    assert.equal(status, 0);
+    assert.match(stdout, /已导出 2 条/);
+    assert.match(stdout, /habits-.*\.csv/);
+  });
+});
+
+// ── import 命令 ───────────────────────────────────────────────────────────────
+describe('import 命令', () => {
+  let env, dir;
+  before(() => ({ dir, env } = makeTmpEnv()));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('导入 CSV 文件', () => {
+    const csvFile = join(dir, 'import.csv');
+    writeFileSync(csvFile, 'topic,tags,duration_minutes,note,raw_input,checked_at\n骑行,运动,30,环湖,打卡骑行,2026-04-02 10:00:00\n阅读,学习,,第一章,读书,2026-04-02 20:00:00\n', 'utf8');
+    const { stdout, status } = run(env, 'import', `--file=${csvFile}`);
+    assert.equal(status, 0);
+    assert.match(stdout, /已导入 2 条/);
+
+    const { stdout: listOut } = run(env, 'list');
+    assert.match(listOut, /共 2 条/);
+  });
+
+  test('缺少 --file 报错', () => {
+    const { stderr, status } = run(env, 'import');
+    assert.notEqual(status, 0);
+    assert.match(stderr, /需要指定/);
+  });
+
+  test('文件不存在报错', () => {
+    const { stderr, status } = run(env, 'import', '--file=/tmp/nonexistent.csv');
+    assert.notEqual(status, 0);
+    assert.match(stderr, /不存在/);
+  });
+
+  test('缺少 topic 列报错', () => {
+    const csvFile = join(dir, 'bad-header.csv');
+    writeFileSync(csvFile, 'name,tags\n骑行,运动\n', 'utf8');
+    const { stderr, status } = run(env, 'import', `--file=${csvFile}`);
+    assert.notEqual(status, 0);
+    assert.match(stderr, /topic/);
+  });
+
+  test('topic 为空报错', () => {
+    const csvFile = join(dir, 'empty-topic.csv');
+    writeFileSync(csvFile, 'topic,tags\n,运动\n', 'utf8');
+    const { stderr, status } = run(env, 'import', `--file=${csvFile}`);
+    assert.notEqual(status, 0);
+    assert.match(stderr, /topic 不能为空/);
+  });
+
+  test('无效 duration_minutes 报错', () => {
+    const csvFile = join(dir, 'bad-duration.csv');
+    writeFileSync(csvFile, 'topic,duration_minutes\n骑行,abc\n', 'utf8');
+    const { stderr, status } = run(env, 'import', `--file=${csvFile}`);
+    assert.notEqual(status, 0);
+    assert.match(stderr, /duration_minutes/);
   });
 });
 

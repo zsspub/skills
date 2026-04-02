@@ -1,7 +1,7 @@
 ---
 name: habits
 description: "管理存储在本地 SQLite 中的每日打卡记录，支持添加打卡、查看记录、统计分析、连续打卡天数、删除和修改。当用户提到打卡、签到、记录运动/阅读/学习/健身/冥想/跑步/骑行等日常习惯，或者想查看自己某个习惯坚持了多少天、本周运动了多少时间、今天打卡了什么，都应主动使用这个 skill。即使用户没有明确说“打卡”，只要涉及日常习惯追踪、活动记录，都适用。英文场景同样适用，如 check in, log my workout, track my reading, how many days in a row, streak, habits。"
-argument-hint: "add|list|stats|streak|update|delete|config [选项]"
+argument-hint: "add|list|stats|streak|update|delete|export|import|config [选项]"
 metadata:
   version: "1.0.0"
   data_version: "1.0.0"
@@ -56,6 +56,8 @@ habits config --timezone=Asia/Shanghai
 | "骑行连续打卡多少天了？" | — | `streak --topic=骑行` |
 | "把第3条打卡改成45分钟" | — | `update 3 --duration=45` |
 | "删掉那条跑步记录" | — | 先 `list` 找到 id，再 `delete <id>` |
+| "导出打卡记录" / "备份打卡数据" | — | `export` |
+| "导入打卡记录" / "从文件恢复" | — | `import --file=<路径>` |
 
 **原话保存：** 每次 `add` 打卡时，将用户说的原始文字通过 `--raw` 参数原封不动地存储下来，方便日后回溯。
 
@@ -142,6 +144,21 @@ habits streak [--topic=主题] [--tag=标签]
 ```
 habits config [--timezone=<IANA时区>]
 ```
+
+### 导出打卡记录
+```
+habits export [--file=<路径>] [--topic=主题] [--tag=标签]
+```
+- 导出为 CSV 格式
+- `--file`：指定输出文件路径，不指定则自动生成到数据目录
+- `--topic` / `--tag`：可选筛选条件
+
+### 导入打卡记录
+```
+habits import --file=<路径>
+```
+- 从 CSV 文件导入，CSV 必须包含 `topic` 列
+- 导入前会校验数据格式，校验失败则取消导入
 
 ## 示例
 
