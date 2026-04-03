@@ -1,0 +1,23 @@
+{
+  "skill_name": "notes",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "记一下 React hooks 的几个常见坑：useEffect 依赖数组漏了变量会导致闭包问题，useState 的更新是异步的不能立即读到新值，自定义 hook 命名必须以 use 开头",
+      "expected_output": "在 .data/notes/ 下创建一个带 frontmatter 的 .md 文件，标题包含 React hooks 相关内容，标签应包含「技术」，正文应结构化整理用户提到的三个要点",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "找一下我之前关于 Docker 的笔记",
+      "expected_output": "在笔记目录中搜索包含 Docker 关键词的笔记文件并展示匹配结果",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "看看我最近记了什么，只看标签是工作的",
+      "expected_output": "列出笔记目录下的文件，读取 frontmatter 筛选标签含「工作」的笔记并展示列表",
+      "files": []
+    }
+  ]
+}
