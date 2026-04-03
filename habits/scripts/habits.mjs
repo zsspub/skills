@@ -317,6 +317,49 @@ function cmdList(flags) {
     conditions.push("(',' || tags || ',' LIKE ?)");
     params.push(`%,${flags.tag},%`);
   }
+  // 快捷时间范围
+  if (flags.period) {
+    const todayStr = utcToTZ(getNowUTCStr(), config.timezone).split(' ')[0];
+    switch (flags.period) {
+      case 'today': {
+        const dayStart = tzToUTC(`${todayStr} 00:00:00`, config.timezone);
+        const dayEnd = tzToUTC(`${todayStr} 23:59:59`, config.timezone);
+        conditions.push('checked_at >= ? AND checked_at <= ?');
+        params.push(dayStart, dayEnd);
+        break;
+      }
+      case 'week': {
+        const [y, mo, d] = todayStr.split('-').map(Number);
+        const today = new Date(y, mo - 1, d);
+        const dayOfWeek = today.getDay();
+        const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+        const monday = new Date(y, mo - 1, d + mondayOffset);
+        const p = v => String(v).padStart(2, '0');
+        const fromStr = `${monday.getFullYear()}-${p(monday.getMonth()+1)}-${p(monday.getDate())} 00:00:00`;
+        conditions.push('checked_at >= ?');
+        params.push(tzToUTC(fromStr, config.timezone));
+        break;
+      }
+      case 'month': {
+        const [y, mo] = todayStr.split('-').map(Number);
+        const p = v => String(v).padStart(2, '0');
+        const fromStr = `${y}-${p(mo)}-01 00:00:00`;
+        conditions.push('checked_at >= ?');
+        params.push(tzToUTC(fromStr, config.timezone));
+        break;
+      }
+      case 'year': {
+        const y = todayStr.split('-')[0];
+        const fromStr = `${y}-01-01 00:00:00`;
+        conditions.push('checked_at >= ?');
+        params.push(tzToUTC(fromStr, config.timezone));
+        break;
+      }
+      default:
+        console.error('错误：--period 必须为 today、week、month 或 year。');
+        process.exit(1);
+    }
+  }
   if (flags.date) {
     validateDate(flags.date, '--date');
     // 将 date 范围转换为 UTC 进行查询
@@ -789,7 +832,24 @@ switch (command) {
   case 'import':
     cmdImport(flags);
     break;
+  case 'help':
+  case '--help':
+  case '-h':
+    console.log(`\n每日打卡 CLI\n`);
+    console.log(`用法：habits <命令> [选项]\n`);
+    console.log(`命令：`);
+    console.log(`  add "主题" --raw="原话" [--tags=标签] [--duration=分钟] [--note="备注"] [--at="YYYY-MM-DD HH:mm:ss"]`);
+    console.log(`  list [--topic=主题] [--tag=标签] [--date=YYYY-MM-DD] [--period=today|week|month|year] [--search=关键字] [--limit=数量]`);
+    console.log(`  update <id> [--topic=...] [--tags=...] [--duration=...] [--note=...] [--at="..."]`);
+    console.log(`  delete <id>`);
+    console.log(`  stats [--topic=主题] [--tag=标签] [--period=today|week|month|year]`);
+    console.log(`  streak [--topic=主题] [--tag=标签]`);
+    console.log(`  config [--timezone=<IANA时区>]`);
+    console.log(`  export [--file=<路径>] [--topic=主题] [--tag=标签]`);
+    console.log(`  import --file=<路径>`);
+    console.log();
+    break;
   default:
-    console.error(`未知命令：${command ?? '(空)'}\n可用命令：add, list, update, delete, stats, streak, config, export, import`);
+    console.error(`未知命令：${command ?? '(空)'}\n可用命令：add, list, update, delete, stats, streak, config, export, import\n提示：运行 habits help 查看详细用法`);
     process.exit(1);
 }

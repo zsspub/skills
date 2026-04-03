@@ -1,0 +1,54 @@
+{
+  "skill_name": "todos",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我记一下后天下午三点前要把那个 PPT 发给老板，比较紧急",
+      "expected_output": "添加一条高优先级待办，标题包含 PPT 和老板相关内容，截止时间设置为后天 15:00:00",
+      "files": [],
+      "expectations": [
+        "Used the todos.mjs script to add the task",
+        "Title mentions PPT and/or 老板",
+        "Priority is set to high",
+        "Due date is set to 2026-04-05 15:00:00"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "看看我最近有什么还没做的",
+      "expected_output": "列出所有 pending 状态的待办事项，若有过期任务则主动提醒",
+      "files": [],
+      "expectations": [
+        "Used todos.mjs list command",
+        "Showed all pending tasks",
+        "Flagged the overdue task",
+        "Provided a brief summary"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "报告写完了，然后帮我加一个待办：下周三之前准备面试题，标签是招聘",
+      "expected_output": "先将报告相关的待办标记为完成，然后添加一条新待办，标题包含面试题，标签为招聘，截止时间设为下周三 23:59:59",
+      "files": [],
+      "expectations": [
+        "Listed or searched existing todos to find the report task",
+        "Marked report todo as done",
+        "Added new todo with 面试题 in title",
+        "Due date set to 2026-04-08",
+        "Tag set to 招聘"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "今天晚上回去提醒我清理行李箱",
+      "expected_output": "添加一条待办，标题包含清理行李箱，截止时间设置为今天晚上（如 21:00:00 或类似合理时间）",
+      "files": [],
+      "expectations": [
+        "Used todos.mjs to add the task",
+        "Title mentions 清理行李箱",
+        "Due date is set to today 2026-04-03",
+        "Due time is a reasonable evening time"
+      ]
+    }
+  ]
+}
